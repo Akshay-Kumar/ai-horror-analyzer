@@ -11,15 +11,23 @@ def load_weights(path: str = "config/scoring.json"):
 
 
 def weighted_score(scores: HorrorScores, weights: dict) -> float:
-    total = sum(getattr(scores, d) * weights.get(d, 0) for d in DIMENSIONS)
-    used = sum(weights.get(d, 0) for d in DIMENSIONS)
+    available = {
+        d: getattr(scores, d)
+        for d in DIMENSIONS
+        if getattr(scores, d) is not None and weights.get(d, 0) > 0
+    }
+    if not available:
+        return 0.0
+    total = sum(available[d] * weights.get(d, 0) for d in available)
+    used = sum(weights.get(d, 0) for d in available)
     return round(total / used, 2) if used else 0.0
 
 
 def average_scores(items) -> HorrorScores:
     if not items:
-        return HorrorScores(**{d: 0 for d in DIMENSIONS})
-    return HorrorScores(**{
-        d: round(sum(getattr(x, d) for x in items) / len(items), 2)
-        for d in DIMENSIONS
-    })
+        return HorrorScores()
+    values = {}
+    for d in DIMENSIONS:
+        observed = [getattr(x, d) for x in items if getattr(x, d) is not None]
+        values[d] = round(sum(observed) / len(observed), 2) if observed else None
+    return HorrorScores(**values)
