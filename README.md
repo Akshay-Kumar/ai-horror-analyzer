@@ -1,76 +1,41 @@
-# AI Horror Analyzer — V1
+# AI Horror Analyzer V2
 
-A local, modular proof-of-concept for analyzing movies/TV episodes for horror effectiveness.
+Content-based horror analysis for movies and TV episodes. It does not use public reviews or ratings.
 
-## V1 pipeline
-
-```text
-Movie file
-   ↓
-FFprobe / FFmpeg
-   ↓
-Media metadata
-   ↓
-Time segments
-   ↓
-Representative frames
-   ↓
-AI analyzer interface
-   ↓
-Scene-level horror dimensions
-   ↓
-Weighted 1–10 score
-   ↓
-analysis.json
-```
-
-## Requirements
-
-- Python 3.10+
-- FFmpeg + ffprobe available on PATH
-
-Check:
+## Setup
 
 ```bash
-ffmpeg -version
-ffprobe -version
-```
-
-Python packages:
-
-```bash
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env
 ```
 
-## First run
+Add `OPENAI_API_KEY` to `.env`.
 
-Put a movie in `input/`, for example:
+## Test Annabelle with 3 segments
 
-```text
-input/movie.mkv
-```
-
-Then:
+With 2-minute segments, analyze segments 0, 20 and 40:
 
 ```bash
-python main.py input/movie.mkv
+python main.py "input/Annabelle (2014) Bluray-1080p.mkv" --segments 0,20,40
 ```
 
-V1 currently creates the media/segment/frame analysis package and uses a deterministic placeholder analyzer. This is intentional: we will add the real multimodal AI analyzer after validating extraction.
+This extracts 9 frames and makes 3 multimodal analysis requests.
 
-Output:
+## Whole movie
+
+```bash
+python main.py "input/movie.mkv"
+```
+
+## Output
 
 ```text
-output/<movie-name>/analysis.json
 output/<movie-name>/frames/
+output/<movie-name>/analysis.json
 ```
 
-## Next milestones
+The JSON keeps segment-level scores, explanations, fear mechanisms and confidence.
 
-1. Real multimodal AI analysis
-2. Subtitle extraction / transcription
-3. Scene-change detection
-4. Audio features
-5. Database persistence
-6. React dashboard
-7. Plex integration
+The 1–10 number is an experimental **content-based horror effectiveness** score, not an objective measure of how frightening every viewer will find the movie.
