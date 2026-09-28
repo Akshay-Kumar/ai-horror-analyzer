@@ -1,0 +1,15 @@
+{
+  "version": "1.0",
+  "weights": {
+    "dread": 0.15,
+    "suspense": 0.15,
+    "uncertainty": 0.10,
+    "vulnerability": 0.10,
+    "psychological": 0.15,
+    "atmosphere": 0.10,
+    "threat": 0.10,
+    "shock": 0.05,
+    "disturbance": 0.05,
+    "pacing": 0.05
+  }
+}
