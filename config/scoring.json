@@ -1,12 +1,14 @@
 {
+  "segment_seconds": 120,
+  "frames_per_segment": 3,
   "weights": {
     "dread": 0.15,
     "suspense": 0.15,
-    "uncertainty": 0.10,
-    "vulnerability": 0.10,
+    "uncertainty": 0.1,
+    "vulnerability": 0.1,
     "psychological": 0.15,
-    "atmosphere": 0.10,
-    "threat": 0.10,
+    "atmosphere": 0.1,
+    "threat": 0.1,
     "shock": 0.05,
     "disturbance": 0.05,
     "pacing": 0.05

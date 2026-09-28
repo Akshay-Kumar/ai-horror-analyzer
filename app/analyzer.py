@@ -1,209 +1,228 @@
 from pathlib import Path
+import base64
 import json
-import re
-
-from ollama import Client
-
-from .schemas import Segment, SegmentAnalysis
+import requests
+from schemas import SegmentAnalysis
 
 
-SYSTEM_PROMPT = """
-You are a forensic horror-content analyst.
+VISION_SYSTEM = r"""
+You are the visual evidence stage of a horror-analysis pipeline.
 
-Analyze ONLY the supplied movie frames and their chronological order.
+Analyze only what is visually supported by the supplied movie frames. Do not use
+public reviews, ratings, genre databases, or outside knowledge.
 
-Do not use:
-- public reviews
-- genre reputation
-- outside plot knowledge
-- filename information
-- assumptions about the movie
+Your job is NOT to assign horror scores. Produce detailed factual observations that
+a second model can use to score horror effectiveness.
 
-Do not decide whether the movie is good or bad.
+For each frame, identify concrete visible evidence such as:
+- people, creatures, objects, injuries, facial expressions
+- lighting, color, shadows, darkness, isolation
+- composition, distance, camera-visible threat cues
+- unusual or disturbing imagery
+- environmental details that visibly support fear or unease
 
-Your task is to identify observable visual mechanisms that can contribute
-to horror effectiveness.
-
-EVIDENCE RULES:
-
-1. Separate OBSERVATION from INFERENCE.
-2. Every visual observation must describe something actually visible.
-3. Never invent a character's motive, supernatural cause, off-screen event,
-   identity, or threat.
-4. If a dimension cannot be supported by the supplied frames, return null.
-5. Three still frames cannot reliably establish audio, dialogue, a jump scare,
-   or exact editing rhythm.
-6. A cut between two different shots is NOT itself evidence of a jump scare.
-7. Pacing should normally be null unless the frames provide meaningful
-   evidence of temporal progression or repeated escalation.
-8. Shock should normally be null or low unless there is clear evidence of
-   a sudden visual reveal or abrupt visual change.
-9. Do not infer horror merely because an image is dark.
-10. Do not call an ordinary person or object a threat unless the supplied
-    images provide visible evidence supporting that interpretation.
-11. Confidence must reflect the evidence available in these frames.
-    With only three still frames and no audio/subtitles, confidence must
-    not exceed 0.80.
-
-DIMENSIONS:
-
-- dread: anticipation or ominous implication of something feared.
-- suspense: unresolved danger or anticipation of an outcome.
-- uncertainty: missing information, concealment, ambiguity, unpredictability.
-- vulnerability: exposed, isolated, helpless, defenseless, or trapped subjects.
-- psychological: uncanny perception, identity, obsession, guilt, sanity,
-  paranoia, or related mechanisms visibly supported by the frames.
-- atmosphere: lighting, setting, composition, isolation, claustrophobia,
-  environmental unease.
-- threat: visible or strongly implied danger supported by the images.
-- shock: sudden visual revelation or abrupt visual change supported by the
-  chronological frame sequence.
-- disturbance: grotesque, uncanny, visceral, taboo, or deeply unsettling
-  imagery.
-- pacing: apparent escalation or rhythm supported by the chronological samples.
-
-REQUIRED OUTPUT:
-
-Provide:
-
-1. A concise summary.
-2. At least two concrete visual observations.
-3. Horror mechanisms only when supported by evidence.
-4. Temporal evidence describing actual changes between frames.
-5. Scores only for dimensions supported by the evidence.
-6. Null for dimensions that cannot reasonably be determined.
-7. A calibrated confidence.
-
-Return ONLY valid JSON matching the supplied schema.
-Do not use Markdown.
-Do not use ```json fences.
-"""
-
-
-USER_TEMPLATE = """
-Analyze this {duration:.0f}-second movie segment.
-
-The frames are chronological:
-
-{frame_list}
+Then identify plausible horror mechanisms ONLY when supported by the frames.
 
 Important:
-
-Do not infer anything from the filename.
-Do not use knowledge of the movie.
-Do not treat a scene cut as a horror event by itself.
-
-Describe what is visibly present and what actually changes between
-the sampled frames.
-
-Then score only the horror dimensions supported by those observations.
-"""
+- Never invent off-screen events.
+- Never infer that an ordinary person/object is dangerous without visual evidence.
+- Do not claim that something is moving from a still frame.
+- Do not infer pacing, jump scares, suspense timing, or escalation from still images alone.
+- If something is ambiguous, explicitly call it ambiguous.
+- Be concise but information-dense.
+""".strip()
 
 
-class HorrorAnalyzer:
+TEXT_SYSTEM = r"""
+You are the scoring stage of a horror-analysis pipeline.
+
+You receive factual visual observations from movie frames plus segment timing.
+Convert that evidence into a strict JSON horror analysis.
+
+Do not use public reviews, ratings, popularity, genre labels, or outside knowledge.
+Do not invent events that are not supported by the evidence.
+
+Scoring rules:
+- Scores are 1-10 only when the supplied evidence supports the dimension.
+- Use null when the evidence is insufficient.
+- Confidence must be 0.0-0.8.
+- Never infer temporal properties from a few still frames.
+- suspense, shock, and pacing normally require temporal/audio evidence. With only
+  still frames, use null unless the evidence itself directly supports a limited
+  observation.
+- vulnerability and threat require an observable source of danger or exposure.
+- dread can be scored only when the visual evidence itself supports ominous,
+  threatening, or foreboding conditions.
+- atmosphere can be scored from lighting, setting, composition, isolation, etc.
+- disturbance can be scored from clearly disturbing imagery.
+- psychological can be scored only when visual evidence supports psychological
+  unease, identity disruption, expressions, apparent distress, uncanny imagery,
+  etc.
+- uncertainty can be scored when the frames visibly contain ambiguity, obscurity,
+  concealment, or unclear identity/source.
+- Do not give high scores merely because a movie is known to be horror.
+
+Return JSON matching the supplied schema exactly.
+""".strip()
+
+
+class OllamaV5:
     def __init__(
         self,
-        model: str = "qwen3-vl:8b",
-        host: str = "http://127.0.0.1:11434",
-        num_ctx: int = 8192,
+        vision_model="qwen3-vl:8b",
+        text_model="qwen3:4b",
+        host="http://127.0.0.1:11434",
+        timeout=600,
     ):
-        self.model = model
-        self.client = Client(host=host)
-        self.num_ctx = num_ctx
+        self.vision_model = vision_model
+        self.text_model = text_model
+        self.host = host.rstrip("/")
+        self.timeout = timeout
 
-    def _extract_json(self, content: str) -> str:
-        """
-        Extract JSON if the model accidentally wraps it in Markdown.
-        """
-        content = content.strip()
-
-        if not content:
-            raise ValueError("Ollama returned an empty response.")
-
-        # Normal JSON response
-        if content.startswith("{") and content.endswith("}"):
-            return content
-
-        # Handle ```json ... ``` just in case
-        match = re.search(
-            r"```(?:json)?\s*(\{.*\})\s*```",
-            content,
-            flags=re.DOTALL,
+    def _chat(self, payload: dict) -> dict:
+        response = requests.post(
+            f"{self.host}/api/chat",
+            json=payload,
+            timeout=self.timeout,
         )
-
-        if match:
-            return match.group(1)
-
-        # Last attempt: locate the outer JSON object
-        start = content.find("{")
-        end = content.rfind("}")
-
-        if start >= 0 and end > start:
-            return content[start:end + 1]
-
-        raise ValueError(
-            f"Ollama returned non-JSON content:\n{content[:2000]}"
-        )
-
-    def analyze_segment(self, segment: Segment) -> SegmentAnalysis:
-
-        frame_names = "\n".join(
-            f"Frame {i + 1}: {Path(p).name}"
-            for i, p in enumerate(segment.frame_paths)
-        )
-
-        prompt = USER_TEMPLATE.format(
-            duration=segment.end_seconds - segment.start_seconds,
-            frame_list=frame_names,
-        )
-
-        response = self.client.chat(
-            model=self.model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": SYSTEM_PROMPT,
-                },
-                {
-                    "role": "user",
-                    "content": prompt,
-                    "images": segment.frame_paths,
-                },
-            ],
-            format=SegmentAnalysis.model_json_schema(),
-            options={
-                "temperature": 0,
-                "num_ctx": self.num_ctx,
-            },
-            think=False,
-            stream=False,
-        )
-
-        content = response.message.content or ""
-
-        if not content.strip():
-            print("\nERROR: Ollama returned an empty response.")
-            print(f"Model: {self.model}")
-
-            if hasattr(response, "message"):
-                print(f"Message: {response.message}")
-
+        if not response.ok:
+            try:
+                detail = response.json()
+            except Exception:
+                detail = response.text
             raise RuntimeError(
-                "Ollama returned empty content. "
-                "See diagnostic information above."
+                f"Ollama API error {response.status_code}: {detail}"
+            )
+        return response.json()
+
+    @staticmethod
+    def _image_b64(path: str) -> str:
+        return base64.b64encode(Path(path).read_bytes()).decode("ascii")
+
+    def vision_stage(self, frame_paths: list[str], start: float, end: float) -> str:
+        prompt = (
+            f"Analyze this {end-start:.0f}-second movie segment. "
+            f"Approximate segment time: {start:.1f}-{end:.1f} seconds. "
+            "Describe the visible evidence for a downstream horror scorer."
+        )
+
+        # Ollama's /api/chat endpoint uses a string `content` plus an
+        # `images` array of base64-encoded images. It does NOT use the
+        # OpenAI-style `content: [{type: image_url, ...}]` format here.
+        images = [self._image_b64(path) for path in frame_paths]
+
+        payload = {
+            "model": self.vision_model,
+            "messages": [
+                {"role": "system", "content": VISION_SYSTEM},
+                {"role": "user", "content": prompt, "images": images},
+            ],
+            "stream": False,
+            "think": True,
+            "options": {
+                "temperature": 0,
+                "num_ctx": 8192,
+                "num_predict": 4096,
+            },
+            "keep_alive": "15m",
+        }
+
+        data = self._chat(payload)
+        message = data.get("message", {})
+        content_text = (message.get("content") or "").strip()
+        thinking = (message.get("thinking") or "").strip()
+
+        # Qwen3-VL can place the useful reasoning in thinking even when content
+        # is empty. That is intentional in V5: the second model consumes it.
+        evidence = content_text or thinking
+        if not evidence:
+            raise RuntimeError(
+                "Vision model returned neither content nor thinking. "
+                f"Model={self.vision_model}; response keys={list(data.keys())}"
+            )
+
+        return evidence
+
+    def score_stage(
+        self,
+        evidence: str,
+        start: float,
+        end: float,
+    ) -> SegmentAnalysis:
+        schema = SegmentAnalysis.model_json_schema()
+
+        user_prompt = f"""
+Segment: {start:.1f} - {end:.1f} seconds
+
+VISUAL EVIDENCE FROM THE VISION MODEL:
+--- BEGIN EVIDENCE ---
+{evidence}
+--- END EVIDENCE ---
+
+Now produce the final structured horror analysis for this segment.
+
+The JSON must contain:
+- summary
+- visual_observations
+- horror_mechanisms
+- dread
+- suspense
+- uncertainty
+- vulnerability
+- psychological
+- atmosphere
+- threat
+- shock
+- disturbance
+- pacing
+
+Each dimension must contain:
+{{
+  "score": number from 1 to 10 OR null,
+  "confidence": number from 0.0 to 0.8,
+  "evidence": "brief evidence-based explanation"
+}}
+
+JSON schema:
+{json.dumps(schema, indent=2)}
+""".strip()
+
+        payload = {
+            "model": self.text_model,
+            "messages": [
+                {"role": "system", "content": TEXT_SYSTEM},
+                {"role": "user", "content": user_prompt},
+            ],
+            "stream": False,
+            "think": False,
+            "format": schema,
+            "options": {
+                "temperature": 0,
+                "num_ctx": 8192,
+                "num_predict": 4096,
+                # Keep the small text model off the GPU so it does not fight
+                # the 8B vision model for the user's 12 GB VRAM.
+                "num_gpu": 0,
+            },
+            "keep_alive": "5m",
+        }
+
+        data = self._chat(payload)
+        message = data.get("message", {})
+        content_text = (message.get("content") or "").strip()
+
+        if not content_text:
+            thinking = (message.get("thinking") or "").strip()
+            raise RuntimeError(
+                "Text scoring model returned no final JSON. "
+                f"content_length={len(content_text)}, "
+                f"thinking_length={len(thinking)}"
             )
 
         try:
-            json_content = self._extract_json(content)
-            return SegmentAnalysis.model_validate_json(json_content)
-
+            return SegmentAnalysis.model_validate_json(content_text)
         except Exception as exc:
-            print("\nERROR: Could not parse Ollama response.")
-            print("\nRaw Ollama response:")
-            print("--------------------------------------------------")
-            print(content)
-            print("--------------------------------------------------")
-
             raise RuntimeError(
-                f"Failed to parse structured Ollama response: {exc}"
+                "Text scoring model returned invalid JSON.\n"
+                f"Raw response:\n{content_text}"
             ) from exc

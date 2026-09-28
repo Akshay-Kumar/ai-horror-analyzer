@@ -1,64 +1,56 @@
-from typing import List, Literal
-from pydantic import BaseModel, Field, ConfigDict
+from typing import Optional, List
+from pydantic import BaseModel, Field
 
 
-class MediaInfo(BaseModel):
-    path: str
-    filename: str
-    duration_seconds: float
-    width: int
-    height: int
-    video_codec: str | None = None
-    audio_streams: int = 0
-    subtitle_streams: int = 0
+DIMENSIONS = [
+    "dread",
+    "suspense",
+    "uncertainty",
+    "vulnerability",
+    "psychological",
+    "atmosphere",
+    "threat",
+    "shock",
+    "disturbance",
+    "pacing",
+]
+
+
+class DimensionScore(BaseModel):
+    score: Optional[float] = Field(default=None, ge=1, le=10)
+    confidence: float = Field(default=0.0, ge=0, le=0.8)
+    evidence: str = ""
+
+
+class SegmentAnalysis(BaseModel):
+    summary: str = ""
+    visual_observations: List[str] = Field(default_factory=list)
+    horror_mechanisms: List[str] = Field(default_factory=list)
+
+    dread: DimensionScore = Field(default_factory=DimensionScore)
+    suspense: DimensionScore = Field(default_factory=DimensionScore)
+    uncertainty: DimensionScore = Field(default_factory=DimensionScore)
+    vulnerability: DimensionScore = Field(default_factory=DimensionScore)
+    psychological: DimensionScore = Field(default_factory=DimensionScore)
+    atmosphere: DimensionScore = Field(default_factory=DimensionScore)
+    threat: DimensionScore = Field(default_factory=DimensionScore)
+    shock: DimensionScore = Field(default_factory=DimensionScore)
+    disturbance: DimensionScore = Field(default_factory=DimensionScore)
+    pacing: DimensionScore = Field(default_factory=DimensionScore)
 
 
 class Segment(BaseModel):
     index: int
-    start_seconds: float
-    end_seconds: float
-    frame_paths: List[str] = Field(default_factory=list, min_length=1)
-
-
-class HorrorScores(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    # null means the supplied evidence is insufficient to score the dimension.
-    dread: float | None = Field(default=None, ge=0, le=10)
-    suspense: float | None = Field(default=None, ge=0, le=10)
-    uncertainty: float | None = Field(default=None, ge=0, le=10)
-    vulnerability: float | None = Field(default=None, ge=0, le=10)
-    psychological: float | None = Field(default=None, ge=0, le=10)
-    atmosphere: float | None = Field(default=None, ge=0, le=10)
-    threat: float | None = Field(default=None, ge=0, le=10)
-    shock: float | None = Field(default=None, ge=0, le=10)
-    disturbance: float | None = Field(default=None, ge=0, le=10)
-    pacing: float | None = Field(default=None, ge=0, le=10)
-
-
-class SegmentAnalysis(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    summary: str = Field(min_length=1)
-    visual_observations: List[str] = Field(min_length=1)
-    horror_mechanisms: List[str] = Field(default_factory=list)
-    escalation: Literal["none", "low", "medium", "high", "unknown"]
-    temporal_evidence: str = Field(min_length=1)
-    scores: HorrorScores
-    confidence: float = Field(ge=0, le=1)
-
-
-class AnalyzedSegment(BaseModel):
-    segment: Segment
-    analysis: SegmentAnalysis
+    start: float
+    end: float
+    frame_paths: List[str]
 
 
 class MovieAnalysis(BaseModel):
     analyzer_version: str
-    model: str
-    media: MediaInfo
-    sampled_segment_count: int
-    sampled_coverage_percent: float
-    segments: List[AnalyzedSegment]
-    overall_horror_score: float
-    dimension_scores: HorrorScores
+    model_vision: str
+    model_text: str
+    movie: dict
+    coverage: dict
+    segments: List[dict]
+    aggregate: dict

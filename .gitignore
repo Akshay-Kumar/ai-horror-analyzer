@@ -1,5 +1,5 @@
 __pycache__/
-*.py[cod]
+*.pyc
 .venv/
 .env
 output/*
@@ -7,3 +7,4 @@ output/*
 input/*
 !input/.gitkeep
 .idea
+output
