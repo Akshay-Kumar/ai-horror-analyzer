@@ -1,5 +1,4 @@
 {
-  "version": "1.0",
   "weights": {
     "dread": 0.15,
     "suspense": 0.15,

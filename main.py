@@ -1,57 +1,64 @@
 import argparse
 import json
 from pathlib import Path
+from app.media import probe_media, build_segments
 from app.analyzer import HorrorAnalyzer
-from app.media import build_segments, probe_media
-from app.schemas import MovieAnalysis, Segment
-from app.scorer import aggregate, load_weights, weighted_score
+from app.scorer import average_scores, load_weights, weighted_score
+from app.schemas import AnalyzedSegment, MovieAnalysis
 
-def parse_segment_selection(value):
+
+def parse_indices(value: str | None):
     if not value:
         return None
-    try:
-        return [int(x.strip()) for x in value.split(",") if x.strip()]
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("Segments must be comma-separated integers, e.g. 0,20,40") from exc
+    return {int(x.strip()) for x in value.split(",") if x.strip()}
+
 
 def main():
-    parser = argparse.ArgumentParser(description="AI Horror Analyzer V2")
-    parser.add_argument("movie", type=Path)
+    parser = argparse.ArgumentParser(description="Local AI Horror Analyzer using Ollama + Qwen3-VL")
+    parser.add_argument("media")
+    parser.add_argument("--segments", help="Comma-separated segment indexes, e.g. 0,20,40")
+    parser.add_argument("--model", default="qwen3-vl:8b")
     parser.add_argument("--segment-seconds", type=int, default=120)
-    parser.add_argument("--frames", type=int, default=3)
-    parser.add_argument("--segments", type=parse_segment_selection, default=None, help="Selected segment indexes, e.g. 0,20,40")
-    parser.add_argument("--model", default=None, help="Override OPENAI_MODEL")
+    parser.add_argument("--frames-per-segment", type=int, default=3)
+    parser.add_argument("--ollama-host", default="http://127.0.0.1:11434")
     args = parser.parse_args()
-    if not args.movie.exists():
-        raise SystemExit(f"Movie not found: {args.movie}")
-    if args.segment_seconds <= 0 or args.frames <= 0:
-        raise SystemExit("--segment-seconds and --frames must be greater than 0")
-    output_dir = Path("output") / args.movie.stem
-    output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"[1/4] Probing: {args.movie.name}")
-    media = probe_media(args.movie)
-    print(f"      duration={media.duration_seconds:.1f}s resolution={media.width}x{media.height} subtitles={media.subtitle_streams}")
-    print(f"[2/4] Extracting selected segments: {args.segments}" if args.segments else "[2/4] Creating all segments and extracting frames")
-    raw = build_segments(args.movie, media.duration_seconds, output_dir, args.segment_seconds, args.frames, args.segments)
-    segments = [Segment(**x) for x in raw]
-    print(f"      prepared {len(segments)} segments")
-    print("[3/4] Running multimodal AI analyzer")
-    analyzer = HorrorAnalyzer(model=args.model)
-    analyses = []
+
+    media = probe_media(args.media)
+    movie_dir = Path("output") / Path(args.media).stem
+    frame_dir = movie_dir / "frames"
+    selected = parse_indices(args.segments)
+    segments = build_segments(
+        media, str(frame_dir),
+        segment_seconds=args.segment_seconds,
+        frames_per_segment=args.frames_per_segment,
+        selected_indices=selected,
+    )
+
+    analyzer = HorrorAnalyzer(model=args.model, host=args.ollama_host)
+    analyzed = []
     for pos, segment in enumerate(segments, 1):
-        print(f"      analyzing segment {segment.index} ({pos}/{len(segments)})...")
-        analyses.append(analyzer.analyze_segment(segment))
-    print("[4/4] Aggregating scores")
-    weights = load_weights(Path("config/scoring.json"))
-    scores = aggregate(analyses)
+        print(f"Analyzing segment {segment.index} ({pos}/{len(segments)})...")
+        result = analyzer.analyze_segment(segment)
+        analyzed.append(AnalyzedSegment(segment=segment, analysis=result))
+        print(f"  escalation={result.escalation} confidence={result.confidence:.2f}")
+
+    scores = average_scores([x.analysis.scores for x in analyzed])
+    weights = load_weights()
     overall = weighted_score(scores, weights)
-    mechanisms = sorted({m for a in analyses for m in a.fear_mechanisms})
-    result = MovieAnalysis(analyzer_version=analyzer.VERSION, media=media, overall_horror_score=overall, scores=scores, fear_mechanisms=mechanisms, segments=analyses)
-    output_file = output_dir / "analysis.json"
-    output_file.write_text(json.dumps(result.model_dump(), indent=2), encoding="utf-8")
-    print(f"\nDone: {output_file}")
-    print(f"Horror effectiveness score from analyzed segments: {overall}/10")
-    print(f"Analyzer model: {analyzer.model}")
+    output = MovieAnalysis(
+        analyzer_version="ollama-v2",
+        model=args.model,
+        media=media,
+        segments=analyzed,
+        overall_horror_score=overall,
+        dimension_scores=scores,
+    )
+    movie_dir.mkdir(parents=True, exist_ok=True)
+    out_path = movie_dir / "analysis.json"
+    out_path.write_text(output.model_dump_json(indent=2), encoding="utf-8")
+    print(f"\nOverall horror score: {overall}/10")
+    print(f"Saved: {out_path}")
+
 
 if __name__ == "__main__":
     main()

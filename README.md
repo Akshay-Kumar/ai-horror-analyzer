@@ -1,41 +1,76 @@
-# AI Horror Analyzer V2
+# AI Horror Analyzer — V2 Local Vision
 
-Content-based horror analysis for movies and TV episodes. It does not use public reviews or ratings.
+Local multimodal horror analysis using **Ollama + Qwen3-VL 8B**. No OpenAI API credits are required.
+
+Qwen3-VL 8B supports image input and Ollama supports structured JSON output using a Pydantic/JSON schema. The local Ollama API is used at `http://127.0.0.1:11434`.
+
+## Requirements
+
+- Windows 10/11
+- Python 3.10+
+- FFmpeg + ffprobe on PATH
+- Ollama installed and running
+- `qwen3-vl:8b` pulled
+- NVIDIA GPU recommended; this project was tested conceptually around an RTX 4070 Ti + 12 GB VRAM
 
 ## Setup
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -r requirements.txt
-cp .env.example .env
 ```
 
-Add `OPENAI_API_KEY` to `.env`.
+Verify Ollama:
 
-## Test Annabelle with 3 segments
-
-With 2-minute segments, analyze segments 0, 20 and 40:
-
-```bash
-python main.py "input/Annabelle (2014) Bluray-1080p.mkv" --segments 0,20,40
+```powershell
+ollama list
+ollama run qwen3-vl:8b
 ```
 
-This extracts 9 frames and makes 3 multimodal analysis requests.
+## First test
 
-## Whole movie
+Use only three segments first:
 
-```bash
-python main.py "input/movie.mkv"
+```powershell
+python main.py "input\Annabelle (2014) Bluray-1080p.mkv" --segments 0,20,40
 ```
 
-## Output
+Each selected two-minute segment uses three chronological frames. The model analyzes the frames together so it can identify visual progression, not just isolated images.
+
+Output:
 
 ```text
-output/<movie-name>/frames/
-output/<movie-name>/analysis.json
+output\Annabelle (2014) Bluray-1080p\analysis.json
+output\Annabelle (2014) Bluray-1080p\frames\...
 ```
 
-The JSON keeps segment-level scores, explanations, fear mechanisms and confidence.
+## Full movie
 
-The 1–10 number is an experimental **content-based horror effectiveness** score, not an objective measure of how frightening every viewer will find the movie.
+Only run this after reviewing the 3-segment test:
+
+```powershell
+python main.py "input\Annabelle (2014) Bluray-1080p.mkv"
+```
+
+A 97-minute movie at 120-second segments is roughly 49 segments / 147 frames.
+
+## Architecture
+
+```text
+Movie
+  -> FFmpeg
+  -> representative frames
+  -> Qwen3-VL 8B via local Ollama
+  -> structured scene observations
+  -> ten horror dimensions
+  -> weighted score
+  -> analysis.json
+```
+
+## Important limitation
+
+The model is analyzing evidence in the supplied frames. It is not claiming to feel fear and it does not use public ratings/reviews. Temporal dimensions such as pacing and shock are scored conservatively because only three sampled frames are supplied for each two-minute segment.
+
+Next iterations can add subtitle extraction, scene-change detection, audio features, better temporal aggregation, and Plex integration.
